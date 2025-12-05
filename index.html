@@ -1,0 +1,581 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Drift Escape</title>
+<style>
+  :root {
+    --green: #6df077;
+    --dark: #0c0c10;
+    --light: #f5f5d7;
+    --road: #2f2f3a;
+    --sidewalk: #4d4d59;
+    --building: #1b1b23;
+    --ui: #9de4ff;
+  }
+  * { box-sizing: border-box; }
+  body {
+    background: radial-gradient(#0b0b10, #050507 80%);
+    margin: 0;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    height: 100vh;
+    color: var(--light);
+    font-family: 'Press Start 2P', 'VT323', 'Courier New', monospace;
+    letter-spacing: 1px;
+  }
+  #game-wrapper {
+    position: relative;
+    width: 960px;
+    height: 720px;
+    image-rendering: pixelated;
+    image-rendering: crisp-edges;
+    box-shadow: 0 0 30px rgba(0,0,0,0.65);
+    border: 4px solid #333;
+  }
+  canvas {
+    width: 100%;
+    height: 100%;
+    background: #111118;
+    display: block;
+  }
+  #overlay-menu, #end-screen {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    align-items: center;
+    background: rgba(5,5,10,0.75);
+    color: var(--light);
+    text-align: center;
+    gap: 12px;
+    z-index: 3;
+  }
+  .btn {
+    padding: 10px 18px;
+    background: #1b1b23;
+    color: var(--light);
+    border: 2px solid var(--ui);
+    cursor: pointer;
+    font-family: inherit;
+    text-transform: uppercase;
+    box-shadow: 0 0 0 3px #0c0c10;
+  }
+  .btn:hover { background: #262633; }
+  select {
+    background: #1b1b23;
+    color: var(--light);
+    border: 2px solid var(--ui);
+    padding: 6px 8px;
+    font-family: inherit;
+  }
+  #crt {
+    pointer-events: none;
+    position: absolute;
+    inset: 0;
+    background: repeating-linear-gradient(
+      to bottom,
+      rgba(255,255,255,0.06),
+      rgba(255,255,255,0.06) 1px,
+      rgba(0,0,0,0) 3px,
+      rgba(0,0,0,0) 4px
+    );
+    mix-blend-mode: soft-light;
+    z-index: 2;
+  }
+</style>
+</head>
+<body>
+  <div id="game-wrapper">
+    <canvas id="game" width="320" height="240"></canvas>
+    <div id="overlay-menu">
+      <div style="font-size:20px; color: var(--ui);">DRIFT ESCAPE</div>
+      <div>Choose Police AI Mode</div>
+      <select id="mode-select">
+        <option value="1">MODE 1 - Simple Chase</option>
+        <option value="2">MODE 2 - Predictive</option>
+        <option value="3">MODE 3 - Wave</option>
+      </select>
+      <button class="btn" id="start-btn">Start</button>
+      <div style="font-size:10px; max-width: 480px; line-height:1.4;">
+        Arrow keys: drive / Space: handbrake. Drift through the city, avoid police, and reach the glowing GOAL pad when it's safe!
+      </div>
+    </div>
+    <div id="end-screen" style="display:none;">
+      <div id="end-text" style="font-size:24px;"></div>
+      <button class="btn" id="restart-btn">Restart</button>
+    </div>
+    <div id="crt"></div>
+  </div>
+<script>
+(() => {
+  const canvas = document.getElementById('game');
+  const ctx = canvas.getContext('2d');
+  const overlay = document.getElementById('overlay-menu');
+  const endScreen = document.getElementById('end-screen');
+  const endText = document.getElementById('end-text');
+  const modeSelect = document.getElementById('mode-select');
+  const startBtn = document.getElementById('start-btn');
+  const restartBtn = document.getElementById('restart-btn');
+
+  const W = canvas.width;
+  const H = canvas.height;
+  const world = { w: 480, h: 360 };
+  let lastTime = 0;
+  let elapsed = 0;
+  let gameState = 'menu';
+  let mode = 1;
+  let timer = 0;
+  let police = [];
+  let player;
+  let goal;
+  let walls = [];
+  let waveTimer = 0;
+
+  const keys = {};
+  window.addEventListener('keydown', (e) => { keys[e.code] = true; });
+  window.addEventListener('keyup', (e) => { keys[e.code] = false; });
+
+  function resetGame() {
+    timer = 0;
+    elapsed = 0;
+    waveTimer = 0;
+    player = createCar(world.w/2 - 40, world.h/2 + 20, 'player');
+    police = [];
+    walls = createWalls();
+    goal = createGoal();
+    spawnInitialPolice();
+  }
+
+  function createWalls() {
+    const arr = [];
+    // Border buildings
+    arr.push({x:0,y:0,w:world.w,h:40});
+    arr.push({x:0,y:world.h-40,w:world.w,h:40});
+    arr.push({x:0,y:0,w:40,h:world.h});
+    arr.push({x:world.w-40,y:0,w:40,h:world.h});
+    // City blocks
+    arr.push({x:120,y:80,w:60,h:120});
+    arr.push({x:300,y:70,w:90,h:80});
+    arr.push({x:90,y:230,w:110,h:70});
+    arr.push({x:260,y:210,w:120,h:90});
+    // decorative planter
+    arr.push({x:210,y:150,w:30,h:30});
+    return arr;
+  }
+
+  function createGoal() {
+    const margin = 80;
+    return {
+      x: margin + Math.random()*(world.w - margin*2),
+      y: margin + Math.random()*(world.h - margin*2),
+      r: 16
+    };
+  }
+
+  function spawnInitialPolice() {
+    const positions = [
+      {x: world.w/2 + 30, y: world.h/2 - 10},
+      {x: world.w/2 - 20, y: world.h/2 - 60},
+      {x: world.w/2 + 60, y: world.h/2 + 50}
+    ];
+    positions.forEach((p,i)=> police.push(createCar(p.x, p.y, 'police', i)));
+  }
+
+  function createCar(x, y, type, index=0) {
+    return {
+      type,
+      x, y,
+      angle: -Math.PI/2,
+      vx: 0, vy: 0,
+      hp: 10,
+      handbrake: false,
+      size: type==='player'? 12: 11,
+      maxSpeed: type==='player'? 2.6 : 2.2 + (mode===3? index*0.1:0),
+    };
+  }
+
+  function update(dt) {
+    if (gameState !== 'playing') return;
+    timer += dt;
+
+    handlePlayer(dt);
+    handlePolice(dt);
+    checkGoal();
+    police = police.filter(p=>p.hp>0);
+    if (mode===3) handleWave(dt);
+    if (player.hp <= 0) endGame(false, 'GAME OVER');
+  }
+
+  function handleWave(dt){
+    waveTimer += dt;
+    if (waveTimer > 10) {
+      waveTimer = 0;
+      const idx = police.length;
+      const angle = Math.random()*Math.PI*2;
+      const dist = 140 + Math.random()*40;
+      const x = player.x + Math.cos(angle)*dist;
+      const y = player.y + Math.sin(angle)*dist;
+      const clampedX = Math.min(Math.max(60,x), world.w-60);
+      const clampedY = Math.min(Math.max(60,y), world.h-60);
+      police.push(createCar(clampedX, clampedY, 'police', idx));
+    }
+  }
+
+  function handlePlayer(dt) {
+    const car = player;
+    car.handbrake = !!keys['Space'];
+    const accel = (keys['ArrowUp']? 0.12 : 0) + (keys['ArrowDown']? -0.12:0);
+    applyCarPhysics(car, accel, keys['ArrowLeft'], keys['ArrowRight'], dt, true);
+    resolveCollisions(car, true);
+  }
+
+  function handlePolice(dt) {
+    police.forEach((p,i)=>{
+      const target = chooseTarget(p);
+      const accel = 0.1;
+      const steer = steeringTowards(p, target);
+      const left = steer < 0;
+      const right = steer > 0;
+      applyCarPhysics(p, accel, left, right, dt, false, Math.abs(steer));
+      resolveCollisions(p, false);
+      if (hitTest(player, p)) {
+        damage(player, 1.5);
+        damage(p, 1.5);
+      }
+    });
+  }
+
+  function chooseTarget(p) {
+    if (mode === 1) {
+      return {x: player.x, y: player.y};
+    }
+    if (mode === 2) {
+      return {x: player.x + player.vx*12, y: player.y + player.vy*12};
+    }
+    // wave: predictive with slight randomness
+    return {x: player.x + player.vx*10 + Math.cos(elapsed*0.5)*10, y: player.y + player.vy*10 + Math.sin(elapsed*0.5)*10};
+  }
+
+  function steeringTowards(car, target) {
+    const desired = Math.atan2(target.y - car.y, target.x - car.x);
+    let diff = normalizeAngle(desired - car.angle);
+    return diff;
+  }
+
+  function applyCarPhysics(car, accelInput, left, right, dt, isPlayer=false, steerScale=1) {
+    const turnSpeed = 0.05 * steerScale;
+    const hb = car.handbrake;
+    const cos = Math.cos(car.angle);
+    const sin = Math.sin(car.angle);
+    const forward = car.vx * cos + car.vy * sin;
+    let side = -car.vx * sin + car.vy * cos;
+
+    const maxSpeed = car.maxSpeed;
+    let forwardVel = forward + accelInput;
+    forwardVel = Math.max(Math.min(forwardVel, maxSpeed), -maxSpeed*0.5);
+
+    const steerStrength = (Math.abs(forwardVel)/maxSpeed);
+    if (left) car.angle -= turnSpeed * steerStrength;
+    if (right) car.angle += turnSpeed * steerStrength;
+
+    const driftLoss = hb ? 0.96 : 0.90;
+    const gripLoss = hb ? 0.985 : 0.992;
+    side *= driftLoss;
+    forwardVel *= gripLoss;
+
+    car.vx = forwardVel * cos - side * sin;
+    car.vy = forwardVel * sin + side * cos;
+
+    car.x += car.vx * 60 * dt;
+    car.y += car.vy * 60 * dt;
+  }
+
+  function resolveCollisions(car, isPlayer) {
+    let collided = false;
+    walls.forEach(w => {
+      const closestX = clamp(car.x, w.x, w.x + w.w);
+      const closestY = clamp(car.y, w.y, w.y + w.h);
+      const dx = car.x - closestX;
+      const dy = car.y - closestY;
+      const distSq = dx*dx + dy*dy;
+      const r = car.size;
+      if (distSq < r*r) {
+        const dist = Math.max(Math.sqrt(distSq), 0.001);
+        const nx = dx / dist;
+        const ny = dy / dist;
+        car.x = closestX + nx * r;
+        car.y = closestY + ny * r;
+        const bounce = 0.4;
+        const dot = car.vx*nx + car.vy*ny;
+        car.vx -= dot*nx*bounce;
+        car.vy -= dot*ny*bounce;
+        collided = true;
+      }
+    });
+    if (collided && isPlayer) damage(car, 0.6);
+    car.x = clamp(car.x, car.size, world.w - car.size);
+    car.y = clamp(car.y, car.size, world.h - car.size);
+  }
+
+  function damage(car, amount) {
+    car.hp -= amount;
+    if (car.hp < 0) car.hp = 0;
+  }
+
+  function hitTest(a,b){
+    const dx = a.x - b.x;
+    const dy = a.y - b.y;
+    const r = a.size + b.size - 4;
+    return dx*dx + dy*dy < r*r;
+  }
+
+  function checkGoal(){
+    const dx = player.x - goal.x;
+    const dy = player.y - goal.y;
+    const dist = Math.sqrt(dx*dx + dy*dy);
+    if (dist < goal.r) {
+      let nearest = Infinity;
+      police.forEach(p=>{
+        const d = Math.hypot(p.x-player.x, p.y-player.y);
+        if (d < nearest) nearest = d;
+      });
+      if (nearest === Infinity || nearest > 150) {
+        endGame(true, 'STAGE CLEAR');
+      } else {
+        drawFloatingMessage('POLICE TOO CLOSE!');
+      }
+    }
+  }
+
+  function normalizeAngle(a){
+    while(a>Math.PI) a-=Math.PI*2;
+    while(a<-Math.PI) a+=Math.PI*2;
+    return a;
+  }
+
+  function clamp(v, min, max){ return Math.max(min, Math.min(max, v)); }
+
+  function draw() {
+    ctx.imageSmoothingEnabled = false;
+    ctx.clearRect(0,0,W,H);
+    const camX = clamp(player.x - W/2, 0, world.w - W);
+    const camY = clamp(player.y - H/2, 0, world.h - H);
+    ctx.save();
+    ctx.translate(-camX, -camY);
+    drawMap();
+    drawGoal();
+    police.forEach(p=>drawCar(p));
+    drawCar(player);
+    ctx.restore();
+
+    drawUI(camX, camY);
+    requestAnimationFrame(loop);
+  }
+
+  function drawMap(){
+    ctx.fillStyle = '#191924';
+    ctx.fillRect(0,0,world.w,world.h);
+    // Roads
+    ctx.fillStyle = '#2d2d38';
+    ctx.fillRect(60,0,60,world.h);
+    ctx.fillRect(0,140,world.w,60);
+    ctx.fillRect(world.w-120,0,60,world.h);
+    // Sidewalks
+    ctx.fillStyle = '#444455';
+    ctx.fillRect(50,0,10,world.h);
+    ctx.fillRect(120,0,10,world.h);
+    ctx.fillRect(0,130,world.w,10);
+    ctx.fillRect(0,200,world.w,10);
+    ctx.fillRect(world.w-130,0,10,world.h);
+    ctx.fillRect(world.w-60,0,10,world.h);
+    // Buildings
+    ctx.fillStyle = '#16161f';
+    walls.forEach(w=>{
+      ctx.fillRect(w.x, w.y, w.w, w.h);
+      ctx.strokeStyle = '#0f0f17';
+      ctx.strokeRect(w.x+1, w.y+1, w.w-2, w.h-2);
+    });
+    // road stripes
+    ctx.strokeStyle = '#c2c2c2';
+    ctx.setLineDash([6,6]);
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(90,0); ctx.lineTo(90,world.h);
+    ctx.moveTo(world.w-90,0); ctx.lineTo(world.w-90,world.h);
+    ctx.moveTo(0,170); ctx.lineTo(world.w,170);
+    ctx.moveTo(0,230); ctx.lineTo(world.w,230);
+    ctx.stroke();
+    ctx.setLineDash([]);
+  }
+
+  function drawGoal(){
+    const g = goal;
+    ctx.save();
+    ctx.translate(g.x, g.y);
+    for(let i=0;i<6;i++){
+      ctx.beginPath();
+      ctx.arc(0,0,g.r - i*2,0,Math.PI*2);
+      ctx.strokeStyle = `rgba(80, 255, 120, ${0.15 + i*0.08})`;
+      ctx.lineWidth = 2;
+      ctx.stroke();
+    }
+    ctx.fillStyle = 'rgba(120,255,140,0.4)';
+    ctx.beginPath();
+    ctx.arc(0,0,g.r-6,0,Math.PI*2);
+    ctx.fill();
+    ctx.fillStyle = '#0f0';
+    ctx.fillRect(-2,-14,4,12);
+    ctx.fillRect(-6,-2,12,4);
+    ctx.restore();
+  }
+
+  function drawCar(car){
+    ctx.save();
+    ctx.translate(car.x, car.y);
+    ctx.rotate(car.angle);
+    const w = car.size+2;
+    const h = car.size*1.6;
+    ctx.fillStyle = car.type==='player'? '#3fa9f5' : '#eaeaea';
+    ctx.fillRect(-w/2,-h/2,w,h);
+    ctx.fillStyle = car.type==='player'? '#1a5d9f' : '#bdbdbd';
+    ctx.fillRect(-w/2+1,-h/2+1,w-2,h-2);
+    ctx.fillStyle = '#000';
+    ctx.fillRect(-w/2+2,-h/2+2,w-4,4);
+    ctx.fillRect(-w/2+2,h/2-6,w-4,4);
+    if (car.type==='police') {
+      ctx.fillStyle = '#ff3b3b';
+      ctx.fillRect(-w/2+2,-h/2+4, w/2-3, 4);
+      ctx.fillStyle = '#46a3ff';
+      ctx.fillRect(1,-h/2+4, w/2-3, 4);
+    }
+    ctx.restore();
+  }
+
+  function drawUI(camX, camY){
+    // Top timer
+    const time = formatTime(timer);
+    ctx.fillStyle = '#000000aa';
+    ctx.fillRect(W/2 - 50, 6, 100, 16);
+    ctx.fillStyle = varColor('--ui');
+    ctx.font = '10px "Press Start 2P", "VT323", monospace';
+    ctx.textAlign = 'center';
+    ctx.fillText(time, W/2, 18);
+
+    // Title and HP
+    ctx.fillStyle = '#000000aa';
+    ctx.fillRect(6,6,120,30);
+    ctx.fillStyle = varColor('--ui');
+    ctx.textAlign = 'left';
+    ctx.fillText('DRIFT ESCAPE', 10, 18);
+    drawHPBar(10,22, player.hp, 10);
+
+    // Right info
+    ctx.fillStyle = '#000000aa';
+    ctx.fillRect(W-90, 6, 82, 26);
+    ctx.fillStyle = varColor('--ui');
+    ctx.fillText(`POLICE x${police.length}`, W-86, 18);
+    ctx.fillText(`MODE ${mode}`, W-86, 28);
+
+    drawMiniMap(camX, camY);
+  }
+
+  function drawHPBar(x,y,hp,max){
+    const dots = max;
+    for(let i=0;i<dots;i++){
+      const f = i/(dots-1);
+      const color = f<0.5 ? '#4af07a' : (f<0.8?'#c2d24a':'#e34a4a');
+      ctx.fillStyle = i < hp ? color : '#222';
+      ctx.fillRect(x + i*8, y, 6, 6);
+    }
+  }
+
+  function drawMiniMap(camX, camY){
+    const mw = 90, mh = 70;
+    const scaleX = mw/world.w;
+    const scaleY = mh/world.h;
+    ctx.fillStyle = '#000000aa';
+    ctx.fillRect(6, H - mh - 10, mw + 8, mh + 8);
+    ctx.save();
+    ctx.translate(10, H - mh - 6);
+    ctx.fillStyle = '#1f1f2a';
+    ctx.fillRect(0,0,mw,mh);
+    ctx.fillStyle = '#2d2d38';
+    ctx.fillRect(60*scaleX,0,60*scaleX,mh);
+    ctx.fillRect(0,140*scaleY,mw,60*scaleY);
+    ctx.fillRect((world.w-120)*scaleX,0,60*scaleX,mh);
+    ctx.fillStyle = '#0f0';
+    ctx.fillRect(goal.x*scaleX-2, goal.y*scaleY-2, 4,4);
+    ctx.fillStyle = '#3fa9f5';
+    ctx.fillRect(player.x*scaleX-2, player.y*scaleY-2, 4,4);
+    ctx.fillStyle = '#ffb0b0';
+    police.forEach(p=>{
+      ctx.fillRect(p.x*scaleX-2, p.y*scaleY-2, 4,4);
+    });
+    ctx.restore();
+  }
+
+  function drawFloatingMessage(text){
+    ctx.save();
+    ctx.fillStyle = '#000000aa';
+    ctx.fillRect(W/2 - 60, H/2 - 10, 120, 20);
+    ctx.fillStyle = '#ffdd77';
+    ctx.textAlign = 'center';
+    ctx.fillText(text, W/2, H/2 + 4);
+    ctx.restore();
+  }
+
+  function formatTime(t){
+    const total = Math.floor(t);
+    const m = String(Math.floor(total/60)).padStart(2,'0');
+    const s = String(total%60).padStart(2,'0');
+    return `${m}:${s}`;
+  }
+
+  function varColor(name){
+    return getComputedStyle(document.documentElement).getPropertyValue(name) || '#fff';
+  }
+
+  function loop(timestamp){
+    if (!lastTime) lastTime = timestamp;
+    const dt = Math.min((timestamp - lastTime)/1000, 0.033);
+    lastTime = timestamp;
+    elapsed += dt;
+    update(dt);
+    draw();
+  }
+
+  function startGame(){
+    gameState = 'playing';
+    overlay.style.display = 'none';
+    endScreen.style.display = 'none';
+    resetGame();
+    lastTime = 0;
+    requestAnimationFrame(loop);
+  }
+
+  function endGame(clear, text){
+    gameState = 'ended';
+    endText.textContent = text;
+    endScreen.style.display = 'flex';
+  }
+
+  startBtn.addEventListener('click', ()=>{
+    mode = parseInt(modeSelect.value, 10);
+    startGame();
+  });
+  restartBtn.addEventListener('click', ()=>{
+    overlay.style.display = 'flex';
+    endScreen.style.display = 'none';
+    gameState = 'menu';
+  });
+
+  // auto start rendering background even in menu
+  requestAnimationFrame(loop);
+})();
+</script>
+</body>
+</html>
